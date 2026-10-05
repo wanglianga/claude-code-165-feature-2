@@ -35,11 +35,12 @@ func ErrUnprocessable(msg string) *AppError {
 // ---------- 角色 ----------
 
 const (
-	RoleStoreStaff   = "store_staff"
-	RoleStoreManager = "store_manager"
-	RoleCharityStaff = "charity_staff"
-	RoleRegulator    = "regulator"
-	RoleAdmin        = "admin"
+	RoleStoreStaff        = "store_staff"
+	RoleStoreManager      = "store_manager"
+	RoleCharityStaff      = "charity_staff"
+	RoleRegulator         = "regulator"
+	RoleAdmin             = "admin"
+	RoleFoodSafetyOfficer = "food_safety_officer" // 食安专员（复核过敏原拦截）
 )
 
 // ---------- 批次状态机 ----------
@@ -103,16 +104,28 @@ const (
 // ---------- 异常类型 ----------
 
 const (
-	ExSoldOut          = "sold_out"          // 门店临时售罄
-	ExExpired          = "expired"           // 超过可捐赠时限
-	ExTruckLate        = "truck_late"        // 冷链车迟到
-	ExNoShow           = "no_show"           // 公益机构爽约
-	ExWrongScan        = "wrong_scan"        // 箱号错扫
-	ExAllergenMissing  = "allergen_missing"  // 过敏原信息缺失
-	ExSpoilageReport   = "spoilage_report"   // 受助点反馈变质
-	ExRegulatoryCheck  = "regulatory_check"  // 监管抽查
-	ExCapacityRejected = "capacity_rejected" // 接收能力不足被拒
-	ExTempBreach       = "temp_breach"       // 温度超标
+	ExSoldOut              = "sold_out"               // 门店临时售罄
+	ExExpired              = "expired"                // 超过可捐赠时限
+	ExTruckLate            = "truck_late"             // 冷链车迟到
+	ExNoShow               = "no_show"                // 公益机构爽约
+	ExWrongScan            = "wrong_scan"             // 箱号错扫
+	ExAllergenMissing      = "allergen_missing"       // 过敏原信息缺失
+	ExSpoilageReport       = "spoilage_report"        // 受助点反馈变质
+	ExRegulatoryCheck      = "regulatory_check"       // 监管抽查
+	ExCapacityRejected     = "capacity_rejected"      // 接收能力不足被拒
+	ExTempBreach           = "temp_breach"            // 温度超标
+	ExInternalWriteOff     = "internal_write_off"     // 过敏原缺失改为内部报损
+	ExAllergenRiskExcluded = "allergen_risk_excluded" // 高风险过敏原排除敏感受助点
+)
+
+// ---------- 过敏原补录任务状态 ----------
+
+const (
+	AllergenTaskOpen           = "open"            // 待门店补录
+	AllergenTaskSupplemented   = "supplemented"    // 门店已补齐标签
+	AllergenTaskWriteOff       = "write_off"       // 已改为内部报损
+	AllergenTaskReviewPending  = "review_pending"  // 等待食安专员复核
+	AllergenTaskReviewApproved = "review_approved" // 食安专员复核通过
 )
 
 // ---------- 凭证类型 ----------
@@ -181,6 +194,7 @@ type Batch struct {
 	ExpiresAt         time.Time `json:"expires_at"`
 	Allergens         []string  `json:"allergens"`
 	AllergenConfirmed bool      `json:"allergen_confirmed"`
+	PublishBlocked    bool      `json:"publish_blocked"` // 过敏原缺失拦截：阻止发布给公益机构
 	RequiresColdChain bool      `json:"requires_cold_chain"`
 	StorageTempMaxC   *float64  `json:"storage_temp_max_c,omitempty"`
 	Packaging         string    `json:"packaging"`
@@ -235,6 +249,7 @@ type Handover struct {
 	ReceiverVerified bool       `json:"receiver_verified"`
 	ReceiverName     string     `json:"receiver_name"`
 	ReceiverIDNo     string     `json:"receiver_id_no"`
+	LabelConfirmed   bool       `json:"label_confirmed"` // 签收时接收方再次确认过敏原标签完整
 }
 
 type HandoverScan struct {
@@ -306,6 +321,23 @@ type Exception struct {
 	CreatedBy     *int64         `json:"created_by,omitempty"`
 	CreatedAt     time.Time      `json:"created_at"`
 	ResolvedAt    *time.Time     `json:"resolved_at,omitempty"`
+}
+
+// AllergenTask 是过敏原缺失拦截生成的门店补录任务。
+type AllergenTask struct {
+	ID         int64      `json:"id"`
+	TaskNo     string     `json:"task_no"`
+	BatchID    int64      `json:"batch_id"`
+	StoreID    int64      `json:"store_id"`
+	Reason     string     `json:"reason"`      // 触发原因（疑似含坚果/乳制品但过敏原未确认）
+	RiskGroups []string   `json:"risk_groups"` // 命中的高风险分组 nut/dairy
+	Status     string     `json:"status"`      // open/supplemented/write_off/review_pending/review_approved
+	Resolution string     `json:"resolution,omitempty"`
+	ReviewNote string     `json:"review_note,omitempty"`
+	CreatedBy  *int64     `json:"created_by,omitempty"`
+	CreatedAt  time.Time  `json:"created_at"`
+	ResolvedAt *time.Time `json:"resolved_at,omitempty"`
+	ResolvedBy *int64     `json:"resolved_by,omitempty"`
 }
 
 type Publicity struct {

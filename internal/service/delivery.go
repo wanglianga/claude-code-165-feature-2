@@ -57,6 +57,12 @@ func (s *Service) SubmitDeliveryPlan(ctx context.Context, u *domain.User, resvID
 		for _, t := range c.RecipientTypes {
 			allowed[t] = true
 		}
+		// 高风险过敏原批次：儿童/老人/过敏高风险受助点被排除
+		_, excludedTypes := domain.SplitRecipientTypes(b.Allergens, c.RecipientTypes)
+		excluded := map[string]bool{}
+		for _, t := range excludedTypes {
+			excluded[t] = true
+		}
 		total := 0
 		seen := map[int]bool{}
 		for _, st := range stops {
@@ -70,6 +76,11 @@ func (s *Service) SubmitDeliveryPlan(ctx context.Context, u *domain.User, resvID
 			if !allowed[st.RecipientType] {
 				return domain.ErrUnprocessable(fmt.Sprintf(
 					"受助对象类型 %s 不在机构服务能力范围 %v 内", st.RecipientType, c.RecipientTypes))
+			}
+			if excluded[st.RecipientType] {
+				return domain.NewError(422, "ALLERGEN_RISK_EXCLUDED", fmt.Sprintf(
+					"批次含高风险过敏原（%v），受助点类型 %s 属过敏敏感人群，已被排除",
+					domain.HighRiskGroups(b.Allergens), st.RecipientType))
 			}
 			total += st.PlannedBoxes
 		}

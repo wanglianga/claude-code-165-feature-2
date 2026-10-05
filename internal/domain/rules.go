@@ -44,8 +44,12 @@ func CheckReservation(in ReserveCheckInput) *AppError {
 	if !in.Now.Before(b.LatestPickupAt) {
 		return ErrUnprocessable("批次已超过最晚取走时间，不可预约")
 	}
+	if b.PublishBlocked {
+		return NewError(422, "PUBLISH_BLOCKED",
+			"批次疑似含坚果/乳制品但过敏原未填写，已被拦截发布，待门店补录")
+	}
 	if !b.AllergenConfirmed {
-		return ErrUnprocessable("批次过敏原信息未确认，存在食品安全风险，暂不可预约")
+		return NewError(422, "ALLERGEN_MISSING", "批次过敏原信息未确认，存在食品安全风险，暂不可预约")
 	}
 	if in.RequestBoxes <= 0 || in.RequestBoxes > b.TotalBoxes {
 		return ErrUnprocessable(fmt.Sprintf("预约箱数须为 1~%d", b.TotalBoxes))
@@ -78,6 +82,15 @@ func CheckReservation(in ReserveCheckInput) *AppError {
 	}
 	if in.PlannedPickupAt.Before(in.Now.Add(-5 * time.Minute)) {
 		return ErrUnprocessable("计划取货时间早于当前时间")
+	}
+
+	// 高风险过敏原（坚果/乳制品）：机构服务的受助点若全部为儿童/老人/过敏高风险
+	// 等敏感类型，则该机构被排除，不可接收本批次。
+	allowedTypes, excludedTypes := SplitRecipientTypes(b.Allergens, c.RecipientTypes)
+	if len(excludedTypes) > 0 && len(allowedTypes) == 0 {
+		return NewError(422, "ALLERGEN_RISK_EXCLUDED", fmt.Sprintf(
+			"批次含高风险过敏原（%v），机构服务的受助点类型 %v 均为过敏敏感人群，不可接收",
+			HighRiskGroups(b.Allergens), excludedTypes))
 	}
 
 	// 大批量临时释放：占用机构当日能力比例越高，越要求快速上门，

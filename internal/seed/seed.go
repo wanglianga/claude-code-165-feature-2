@@ -45,6 +45,10 @@ func Run(ctx context.Context, pool *pgxpool.Pool) error {
 		{"CH002", "晨光公益服务中心", "上海市长宁区愚园路 1203 号", "021-52000002",
 			31.2205, 121.4301, 8, 60, 0, 0,
 			[]string{"community_kitchen"}},
+		// 仅服务儿童等过敏敏感人群：含坚果/乳制品批次补录后会被整体排除
+		{"CH003", "童心儿童关怀中心", "上海市长宁区法华镇路 457 号", "021-52000003",
+			31.2118, 121.4208, 10, 80, 0, 0,
+			[]string{"children", "allergy_high_risk"}},
 	}
 	for _, c := range charities {
 		if _, err := pool.Exec(ctx, `
@@ -63,7 +67,9 @@ func Run(ctx context.Context, pool *pgxpool.Pool) error {
 		{"store2.manager", "Store@123", "张江店店长", "store_manager", "ST002", ""},
 		{"charity1.staff", "Charity@123", "绿洲食物银行调度员", "charity_staff", "", "CH001"},
 		{"charity2.staff", "Charity@123", "晨光公益调度员", "charity_staff", "", "CH002"},
+		{"charity3.staff", "Charity@123", "童心儿童关怀中心调度员", "charity_staff", "", "CH003"},
 		{"regulator", "Regulator@123", "市场监管局检查员", "regulator", "", ""},
+		{"foodsafety", "FoodSafety@123", "平台食安专员", "food_safety_officer", "", ""},
 		{"admin", "Admin@123", "平台管理员", "admin", "", ""},
 	}
 	for _, u := range users {

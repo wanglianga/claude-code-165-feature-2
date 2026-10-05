@@ -12,13 +12,14 @@ import (
 )
 
 // ReportException 上报业务异常并联动状态机：
-// sold_out(门店) / no_show(门店) / truck_late(机构) / regulatory_check(监管)。
+// sold_out(门店) / no_show(门店) / truck_late(机构) / regulatory_check(监管) /
+// allergen_missing(门店/监管：交接前发现过敏原标签缺失，触发发布拦截与补录任务)。
 func (s *Service) ReportException(ctx context.Context, u *domain.User, batchID int64,
 	exType string, detail map[string]any) (*domain.Exception, error) {
 	switch exType {
-	case domain.ExSoldOut, domain.ExNoShow, domain.ExTruckLate, domain.ExRegulatoryCheck:
+	case domain.ExSoldOut, domain.ExNoShow, domain.ExTruckLate, domain.ExRegulatoryCheck, domain.ExAllergenMissing:
 	default:
-		return nil, domain.ErrBadRequest("异常类型取值: sold_out/no_show/truck_late/regulatory_check")
+		return nil, domain.ErrBadRequest("异常类型取值: sold_out/no_show/truck_late/regulatory_check/allergen_missing")
 	}
 	var ex *domain.Exception
 	err := store.WithTx(ctx, s.DB, func(tx pgx.Tx) error {
@@ -93,6 +94,29 @@ func (s *Service) ReportException(ctx context.Context, u *domain.User, batchID i
 			if u.Role != domain.RoleRegulator && u.Role != domain.RoleAdmin {
 				return domain.ErrForbidden
 			}
+		case domain.ExAllergenMissing:
+			// 门店或监管发现过敏原标签缺失：阻止发布 + 生成补录任务
+			if u.Role == domain.RoleRegulator || u.Role == domain.RoleAdmin {
+				// 监管直接标记
+			} else if err := RequireStore(u, b.StoreID); err != nil {
+				return err
+			}
+			if b.Status == domain.BatchHandedOver || b.Status == domain.BatchInDelivery ||
+				b.Status == domain.BatchDistributed || b.Status == domain.BatchCancelled ||
+				b.Status == domain.BatchExpired {
+				return domain.ErrConflict(fmt.Sprintf("批次当前状态为 %s，不可标记过敏原缺失", b.Status))
+			}
+			reason := "交接前发现过敏原标签缺失，已阻止发布并生成补录任务"
+			if d, ok := detail["reason"].(string); ok && d != "" {
+				reason = d
+			}
+			if _, err := s.markAllergenMissingTx(ctx, tx, b, reason, &u.ID); err != nil {
+				return err
+			}
+			if detail == nil {
+				detail = map[string]any{}
+			}
+			detail["publish_blocked"] = true
 		}
 
 		if detail == nil {

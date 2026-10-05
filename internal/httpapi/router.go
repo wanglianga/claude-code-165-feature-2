@@ -52,6 +52,13 @@ func NewRouter(svc *service.Service, openapiYAML []byte) *gin.Engine {
 		authed.GET("/batches/:id", h.GetBatch)
 		authed.PATCH("/batches/:id/allergens",
 			RequireRoles(domain.RoleStoreStaff, domain.RoleStoreManager), h.ConfirmAllergens)
+		// 过敏原缺失拦截
+		authed.GET("/allergen-tasks", h.ListAllergenTasks)
+		authed.POST("/batches/:id/allergen/resolve",
+			RequireRoles(domain.RoleStoreStaff, domain.RoleStoreManager), h.ResolveAllergenBlock)
+		authed.POST("/batches/:id/allergen/review",
+			RequireRoles(domain.RoleFoodSafetyOfficer, domain.RoleRegulator), h.ReviewAllergenBlock)
+		authed.GET("/batches/:id/eligible-charities", h.EligibleCharities)
 		authed.POST("/batches/:id/reserve",
 			RequireRoles(domain.RoleCharityStaff), h.Reserve)
 		authed.GET("/batches/:id/vouchers", h.ListVouchers)

@@ -51,13 +51,13 @@ func lockBatch(ctx context.Context, tx txQuerier, id int64) (*domain.Batch, erro
 	b := &domain.Batch{}
 	err := tx.QueryRow(ctx, `
 		SELECT id, batch_no, store_id, status, category, description, total_boxes, quantity_desc,
-		       produced_at, shelf_life_hours, expires_at, allergens, allergen_confirmed,
+		       produced_at, shelf_life_hours, expires_at, allergens, allergen_confirmed, publish_blocked,
 		       requires_cold_chain, storage_temp_max_c, packaging, address, lat, lng,
 		       latest_pickup_at, notes, version, created_at, updated_at
 		FROM batches WHERE id=$1 FOR UPDATE`, id).Scan(
 		&b.ID, &b.BatchNo, &b.StoreID, &b.Status, &b.Category, &b.Description, &b.TotalBoxes,
 		&b.QuantityDesc, &b.ProducedAt, &b.ShelfLifeHours, &b.ExpiresAt, &b.Allergens,
-		&b.AllergenConfirmed, &b.RequiresColdChain, &b.StorageTempMaxC, &b.Packaging,
+		&b.AllergenConfirmed, &b.PublishBlocked, &b.RequiresColdChain, &b.StorageTempMaxC, &b.Packaging,
 		&b.Address, &b.Lat, &b.Lng, &b.LatestPickupAt, &b.Notes, &b.Version, &b.CreatedAt, &b.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, domain.ErrNotFound
@@ -72,13 +72,13 @@ func getBatch(ctx context.Context, q txQuerier, id int64) (*domain.Batch, error)
 	b := &domain.Batch{}
 	err := q.QueryRow(ctx, `
 		SELECT id, batch_no, store_id, status, category, description, total_boxes, quantity_desc,
-		       produced_at, shelf_life_hours, expires_at, allergens, allergen_confirmed,
+		       produced_at, shelf_life_hours, expires_at, allergens, allergen_confirmed, publish_blocked,
 		       requires_cold_chain, storage_temp_max_c, packaging, address, lat, lng,
 		       latest_pickup_at, notes, version, created_at, updated_at
 		FROM batches WHERE id=$1`, id).Scan(
 		&b.ID, &b.BatchNo, &b.StoreID, &b.Status, &b.Category, &b.Description, &b.TotalBoxes,
 		&b.QuantityDesc, &b.ProducedAt, &b.ShelfLifeHours, &b.ExpiresAt, &b.Allergens,
-		&b.AllergenConfirmed, &b.RequiresColdChain, &b.StorageTempMaxC, &b.Packaging,
+		&b.AllergenConfirmed, &b.PublishBlocked, &b.RequiresColdChain, &b.StorageTempMaxC, &b.Packaging,
 		&b.Address, &b.Lat, &b.Lng, &b.LatestPickupAt, &b.Notes, &b.Version, &b.CreatedAt, &b.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, domain.ErrNotFound

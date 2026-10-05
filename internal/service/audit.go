@@ -52,6 +52,24 @@ func (s *Service) AuditTrail(ctx context.Context, batchID int64) (map[string]any
 		"chain_valid": domain.VerifyChain(vouchers),
 		"exceptions":  exceptions,
 	}
+	// 过敏原补录任务轨迹
+	taskRows, err := s.DB.Query(ctx, `
+		SELECT `+allergenTaskCols+` FROM allergen_tasks WHERE batch_id=$1 ORDER BY id`, batchID)
+	if err != nil {
+		return nil, err
+	}
+	tasks := []domain.AllergenTask{}
+	for taskRows.Next() {
+		var t domain.AllergenTask
+		if err := taskRows.Scan(&t.ID, &t.TaskNo, &t.BatchID, &t.StoreID, &t.Reason, &t.RiskGroups,
+			&t.Status, &t.Resolution, &t.ReviewNote, &t.CreatedBy, &t.CreatedAt, &t.ResolvedAt, &t.ResolvedBy); err != nil {
+			taskRows.Close()
+			return nil, err
+		}
+		tasks = append(tasks, t)
+	}
+	taskRows.Close()
+	result["allergen_tasks"] = tasks
 	if resv != nil {
 		if scans, err := s.ListScans(ctx, resv.ID); err == nil {
 			result["handover_scans"] = scans
@@ -59,10 +77,12 @@ func (s *Service) AuditTrail(ctx context.Context, batchID int64) (map[string]any
 		var h domain.Handover
 		err := s.DB.QueryRow(ctx, `
 			SELECT id, reservation_id, status, store_staff_id, started_at, completed_at,
-			       overall_temp_c, seal_intact, receiver_verified, receiver_name, receiver_id_no
+			       overall_temp_c, seal_intact, receiver_verified, receiver_name, receiver_id_no,
+			       label_confirmed
 			FROM handovers WHERE reservation_id=$1`, resv.ID).Scan(
 			&h.ID, &h.ReservationID, &h.Status, &h.StoreStaffID, &h.StartedAt, &h.CompletedAt,
-			&h.OverallTempC, &h.SealIntact, &h.ReceiverVerified, &h.ReceiverName, &h.ReceiverIDNo)
+			&h.OverallTempC, &h.SealIntact, &h.ReceiverVerified, &h.ReceiverName, &h.ReceiverIDNo,
+			&h.LabelConfirmed)
 		if err == nil {
 			result["handover"] = h
 		}

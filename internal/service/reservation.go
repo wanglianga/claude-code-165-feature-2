@@ -160,8 +160,11 @@ func (s *Service) Reserve(ctx context.Context, u *domain.User, batchID int64, in
 // recordReserveRejection 预约被规则阻断后，独立事务落库异常凭证与事件。
 func (s *Service) recordReserveRejection(ctx context.Context, u *domain.User, b *domain.Batch, in ReserveInput, checkErr *domain.AppError) {
 	exType := domain.ExCapacityRejected
-	if !b.AllergenConfirmed {
+	switch checkErr.Code {
+	case "ALLERGEN_MISSING", "PUBLISH_BLOCKED":
 		exType = domain.ExAllergenMissing
+	case "ALLERGEN_RISK_EXCLUDED":
+		exType = domain.ExAllergenRiskExcluded
 	}
 	detail := map[string]any{"reason": checkErr.Message, "charity_id": in.CharityID, "boxes": in.Boxes}
 	_ = store.WithTx(ctx, s.DB, func(tx pgx.Tx) error {
