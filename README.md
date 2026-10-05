@@ -19,7 +19,7 @@ docker compose up --build
 | OpenAPI 源文件 | http://localhost:8080/openapi.yaml |
 | 捐赠公示（公开） | http://localhost:8080/api/v1/publicity/donations |
 
-启动后自动完成：建表迁移 → 演示数据（2 门店 / 2 机构 / 7 账号）→ 后台过期巡检任务 → Kafka outbox relay 与 consumer。
+启动后自动完成：建表迁移 → 演示数据（2 门店 / 3 机构 / 9 账号）→ 后台过期巡检任务 → Kafka outbox relay 与 consumer。
 
 ## 测试账号
 
@@ -28,8 +28,10 @@ docker compose up --build
 | `store1.manager` | `Store@123` | 中山公园店店长（确认预约） |
 | `store1.staff` | `Store@123` | 中山公园店店员（上报/扫码交接） |
 | `store2.manager` | `Store@123` | 张江店店长 |
-| `charity1.staff` | `Charity@123` | 绿洲食物银行（有 2 辆冷藏车，半径 15km，日能力 200 箱） |
-| `charity2.staff` | `Charity@123` | 晨光公益（无冷藏车，半径 8km，日能力 60 箱） |
+| `charity1.staff` | `Charity@123` | 绿洲食物银行（有 2 辆冷藏车，半径 15km，日能力 200 箱；服务老人等高风险点，**已完成过敏原分区储运备案**） |
+| `charity2.staff` | `Charity@123` | 晨光公益（无冷藏车，半径 8km，日能力 60 箱；普通社区机构） |
+| `charity3.staff` | `Charity@123` | 童爱公益（儿童福利机构，**高风险受助点且无过敏原管理备案**，含坚果/乳制品批次默认排除） |
+| `safety.officer` | `Safety@123` | 品牌食安专员（过敏原缺失复核裁决） |
 | `regulator` | `Regulator@123` | 监管（全链路审计、抽查留痕、关闭异常） |
 | `admin` | `Admin@123` | 平台管理员 |
 
@@ -41,21 +43,23 @@ docker compose up --build
 # 1) 单元测试：预约规则/状态机/凭证哈希链/温度校验
 go test ./...
 
-# 2) 端到端验证（需服务已启动）：79 项断言，覆盖主流程 + 全部异常场景
+# 2) 端到端验证（需服务已启动）：134 项断言，覆盖主流程 + 全部异常场景 + 过敏原拦截闭环
 ./scripts/verify.sh
 ```
 
-本地验证环境（PostgreSQL 15 + Redis 7 + Kafka 3.9 KRaft）实测结论：
+本地验证环境（PostgreSQL 15 + Redis 7，未启用 Kafka 时事件落 outbox 表）实测结论：
 
 - `go build ./...`、`go vet ./...`、`gofmt` 全部通过；
-- `go test ./...` 通过（domain 规则与凭证链 9 个用例）；
-- `./scripts/verify.sh` **PASS=79 FAIL=0**，覆盖：
-  - 主流程：上报(4 箱冷链批次) → 预约 → 店长确认 → 待交接清单 → 逐箱扫码 → 完成交接 → 配送计划(2 站点) → 发放闭环 → 公示；
+- `go test ./...` 通过（domain 规则、过敏原识别/机构资格与凭证链 16 个用例）；
+- `./scripts/verify.sh` **PASS=134 FAIL=0**，覆盖：
+  - 主流程：上报(4 箱冷链批次) → 预约 → 店长确认 → 待交接清单 → 逐箱扫码 → 完成交接（**接收方 label_confirmed 二次确认过敏原标签**）→ 配送计划(2 站点) → 发放闭环 → 公示；
   - 幂等与防重：Idempotency-Key 重放、同批次重复预约 409、重复扫码返回首扫记录、重复开始交接/重复发放幂等；
-  - 规则：无冷藏车机构预约冷链批次 422、缺 Idempotency-Key 400、配送箱数不一致 422、接收人证件不符 422、未扫完箱不可完成交接 422；
-  - 异常场景：箱号错扫(wrong_scan)、温度超标(temp_breach)、过敏原缺失阻断预约(allergen_missing)、门店临时售罄(sold_out→批次与预约取消)、超过可捐赠时限自动过期(expired)、冷链车迟到(truck_late)、机构爽约(no_show→批次过期)、受助点反馈变质(spoilage_report→3 箱标记 spoiled)、监管抽查(regulatory_check) 与异常关闭；
-  - 凭证与审计：凭证链 `chain_valid=true`、监管审计接口返回全链路轨迹、公示发放箱数与交接一致；
-  - Kafka 链路：27 条 outbox 事件全部发布，consumer 消费并投影公示（日志 `publicity projected batch=1`）。
+  - 规则：无冷藏车机构预约冷链批次 422、缺 Idempotency-Key 400、配送箱数不一致 422、接收人证件不符 422、未扫完箱不可完成交接 422、未确认标签完整不可签收 422；
+  - 异常场景：箱号错扫(wrong_scan)、温度超标(temp_breach)、普通过敏原未确认阻断(allergen_missing)、门店临时售罄(sold_out→批次与预约取消)、超过可捐赠时限自动过期(expired)、冷链车迟到(truck_late)、机构爽约(no_show→批次过期)、受助点反馈变质(spoilage_report→3 箱标记 spoiled)、监管抽查(regulatory_check) 与异常关闭；
+  - **过敏原缺失拦截闭环**：含坚果/乳制品但未填过敏原的批次上报即拦截（`allergen_held=true`，不发布给机构）→ 自动生成门店高优补录任务与 allergen_missing 异常 → 拦截期间任何机构预约 422 → 门店提交食安复核（任务转 safety_review）→ 食安专员驳回后维持拦截并重新生成补录任务 → 门店补录后解除拦截并重算可接收机构（儿童机构童爱公益被排除、已备案的绿洲/普通机构晨光可接收，落 allergen_excluded 异常）→ 被排除机构预约 422 → 已备案机构预约/确认/交接/标签二次确认签收，凭证链 `chain_valid=true`；
+  - **内部报损**：花生批次无法补录 → `internal-loss` 批次取消不流向公益、任务关闭、internal_loss 异常留痕，已报损批次禁止再补录（409）；
+  - **食安核准**：乳制品批次复核经食安专员 approved 后采用过敏原解除拦截，同步排除儿童机构；
+  - 凭证与审计：拦截→复核→补录→交接全程凭证链 `chain_valid=true`、监管审计接口返回全链路轨迹、公示发放箱数与交接一致。
 
 ## 本地开发（无 Docker）
 
@@ -105,9 +109,21 @@ reported → reserved → confirmed → handover → handed_over → in_delivery
 | 冷链车迟到 | `truck_late` | 留痕不推进状态，门店可决定等待或按爽约处理 |
 | 公益机构爽约 | `no_show` | 预约取消、批次过期 |
 | 箱号错扫 | 扫码接口自动 | 记录错扫结果 + `wrong_scan` 异常，不中断交接 |
-| 过敏原信息缺失 | 预约接口自动 | 阻断预约 + `allergen_missing` 异常；门店补充确认后放行 |
+| 过敏原信息缺失 | 上报/预约接口自动 + 补录任务 | 含坚果/乳制品未填过敏原：上报即拦截批次、生成补录任务与 `allergen_missing` 异常；详见下节 |
 | 受助点反馈变质 | 反馈接口 `spoiled` | `spoilage_report` 异常 + 箱标记 spoiled |
 | 监管抽查 | `regulatory_check` + `GET /batches/{id}/audit` | 抽查留痕；审计接口返回全链路轨迹并实时重算哈希链 |
+
+## 过敏原缺失拦截闭环
+
+1. **上报拦截** `POST /stores/{id}/batches`：门店未填过敏原时，服务依据品类/描述关键词（中英文：坚果/花生/核桃/杏仁…，牛奶/奶/乳/芝士/黄油/奶油…）推断是否含**坚果/乳制品**；命中则批次 `allergen_held=true`、不发布给公益机构，同时生成门店高优**补录任务**（`store_tasks`）与 `allergen_missing` 异常凭证。
+2. **预约/签收阻断**：拦截中的批次任何机构预约返回 422；作为最终防线，交接完成时若过敏原仍缺失，接收方无法签收。
+3. **门店三选一处置**：
+   - 补齐标签：`PATCH /batches/{id}/allergens` 补录过敏原（中英文别名归一化，如"坚果/牛奶"→`nut/milk`）；
+   - 内部报损：`POST /batches/{id}/internal-loss`，批次取消、不进入公益流向，留 `internal_loss` 异常；
+   - 等待食安复核：`POST /batches/{id}/allergen-reviews`，由食安专员 `POST /allergen-reviews/{id}/decision` 裁决（`approved` 核准过敏原解除拦截；`rejected` 驳回维持拦截并重新生成补录任务）。
+4. **重算可接收机构**：补录/核准含坚果/乳制品过敏原后，服务按机构 `high_risk_recipients`（儿童/老人/过敏高风险受助点）与 `allergen_managed`（过敏原分区储运备案）重算资格并写入批次 `eligible_charity_ids`，排除结果留 `allergen_excluded` 异常；查询 `GET /batches/{id}/eligible-charities`。
+5. **签收二次确认**：`POST /reservations/{id}/handover/complete` 必须带 `label_confirmed=true`，交接凭证记录接收方对过敏原标签完整的再次确认。
+6. **任务闭环**：`GET /store-tasks` 查看补录任务（补齐/报损/送审分别置 done；售罄/过期自动取消），`GET /allergen-reviews` 查看复核单。
 
 ## 一致性与可靠性设计
 
@@ -123,9 +139,9 @@ reported → reserved → confirmed → handover → handed_over → in_delivery
 ```
 cmd/server/          入口 + 内嵌 openapi.yaml
 internal/config/     环境变量配置
-internal/domain/     实体、状态机、预约规则、凭证哈希（含单测）
+internal/domain/     实体、状态机、预约规则、过敏原识别/机构资格、凭证哈希（含单测）
 internal/store/      PG 连接池、迁移执行器、事务助手
-internal/service/    业务用例（批次/预约/交接/配送/异常/审计/公示/过期巡检）
+internal/service/    业务用例（批次/预约/交接/配送/异常/过敏原拦截/审计/公示/过期巡检）
 internal/httpapi/    路由、中间件（认证/角色/CORS）、处理器
 internal/events/     outbox relay → Kafka、consumer 公示投影
 internal/jobs/       过期巡检定时任务

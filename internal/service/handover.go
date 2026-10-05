@@ -157,14 +157,18 @@ func (s *Service) ScanBox(ctx context.Context, u *domain.User, resvID int64, box
 	return scan, created, err
 }
 
-// CompleteHandover 完成交接：全部箱扫描完成 + 接收人身份核验 + 整体温度与封签。
+// CompleteHandover 完成交接：全部箱扫描完成 + 接收人身份核验 + 整体温度与封签 +
+// 过敏原标签完整二次确认。过敏原仍缺失（拦截未解除）时接收方无法签收。
 func (s *Service) CompleteHandover(ctx context.Context, u *domain.User, resvID int64,
-	receiverName, receiverIDNo string, overallTempC *float64, sealIntact *bool) (*domain.Handover, error) {
+	receiverName, receiverIDNo string, overallTempC *float64, sealIntact *bool, labelConfirmed bool) (*domain.Handover, error) {
 	if receiverName == "" || receiverIDNo == "" {
 		return nil, domain.ErrBadRequest("接收人姓名与证件号必填")
 	}
 	if sealIntact == nil {
 		return nil, domain.ErrBadRequest("封签状态必填")
+	}
+	if !labelConfirmed {
+		return nil, domain.ErrUnprocessable("接收方须再次确认过敏原标签完整（label_confirmed=true）后方可签收")
 	}
 	var h *domain.Handover
 	err := store.WithTx(ctx, s.DB, func(tx pgx.Tx) error {
@@ -193,6 +197,10 @@ func (s *Service) CompleteHandover(ctx context.Context, u *domain.User, resvID i
 		if hStatus == "completed" {
 			h, err = s.getHandover(ctx, tx, handoverID) // 幂等返回
 			return err
+		}
+		// 过敏原拦截最终防线：交接时仍缺失则接收方无法签收。
+		if b.AllergenHeld || !b.AllergenConfirmed {
+			return domain.ErrUnprocessable("该批次过敏原信息仍缺失，接收方无法签收；门店须补齐标签、改为内部报损或等待食安专员复核")
 		}
 		// 全部箱必须完成扫码
 		var pending int
@@ -229,8 +237,10 @@ func (s *Service) CompleteHandover(ctx context.Context, u *domain.User, resvID i
 		}
 		if _, err := tx.Exec(ctx, `
 			UPDATE handovers SET status='completed', completed_at=now(), overall_temp_c=$1,
-			    seal_intact=$2, receiver_verified=$3, receiver_name=$4, receiver_id_no=$5
-			WHERE id=$6`, overallTempC, *sealIntact, verified, receiverName, receiverIDNo, handoverID); err != nil {
+			    seal_intact=$2, receiver_verified=$3, receiver_name=$4, receiver_id_no=$5,
+			    label_confirmed=$6
+			WHERE id=$7`, overallTempC, *sealIntact, verified, receiverName, receiverIDNo,
+			labelConfirmed, handoverID); err != nil {
 			return err
 		}
 		if _, err := tx.Exec(ctx,
@@ -245,12 +255,15 @@ func (s *Service) CompleteHandover(ctx context.Context, u *domain.User, resvID i
 			"handover_id": handoverID, "reservation_no": r.ReservationNo,
 			"overall_temp_c": overallTempC, "seal_intact": *sealIntact,
 			"receiver_name": receiverName, "receiver_id_no": receiverIDNo,
-			"receiver_verified": verified, "store_staff_id": u.ID, "boxes": b.TotalBoxes,
+			"receiver_verified": verified, "label_confirmed": labelConfirmed,
+			"allergens": b.Allergens, "allergen_confirmed": b.AllergenConfirmed,
+			"store_staff_id": u.ID, "boxes": b.TotalBoxes,
 		}); err != nil {
 			return err
 		}
 		if err := insertOutbox(ctx, tx, s.Cfg.KafkaTopic, fmt.Sprintf("batch:%d", b.ID), "batch.handed_over", map[string]any{
 			"batch_id": b.ID, "reservation_id": resvID, "handover_id": handoverID,
+			"label_confirmed": labelConfirmed,
 		}); err != nil {
 			return err
 		}
@@ -264,10 +277,12 @@ func (s *Service) getHandover(ctx context.Context, q txQuerier, id int64) (*doma
 	h := &domain.Handover{}
 	err := q.QueryRow(ctx, `
 		SELECT id, reservation_id, status, store_staff_id, started_at, completed_at,
-		       overall_temp_c, seal_intact, receiver_verified, receiver_name, receiver_id_no
+		       overall_temp_c, seal_intact, receiver_verified, label_confirmed,
+		       receiver_name, receiver_id_no
 		FROM handovers WHERE id=$1`, id).Scan(
 		&h.ID, &h.ReservationID, &h.Status, &h.StoreStaffID, &h.StartedAt, &h.CompletedAt,
-		&h.OverallTempC, &h.SealIntact, &h.ReceiverVerified, &h.ReceiverName, &h.ReceiverIDNo)
+		&h.OverallTempC, &h.SealIntact, &h.ReceiverVerified, &h.LabelConfirmed,
+		&h.ReceiverName, &h.ReceiverIDNo)
 	return h, err
 }
 

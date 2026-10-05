@@ -59,10 +59,12 @@ func (s *Service) AuditTrail(ctx context.Context, batchID int64) (map[string]any
 		var h domain.Handover
 		err := s.DB.QueryRow(ctx, `
 			SELECT id, reservation_id, status, store_staff_id, started_at, completed_at,
-			       overall_temp_c, seal_intact, receiver_verified, receiver_name, receiver_id_no
+			       overall_temp_c, seal_intact, receiver_verified, label_confirmed,
+			       receiver_name, receiver_id_no
 			FROM handovers WHERE reservation_id=$1`, resv.ID).Scan(
 			&h.ID, &h.ReservationID, &h.Status, &h.StoreStaffID, &h.StartedAt, &h.CompletedAt,
-			&h.OverallTempC, &h.SealIntact, &h.ReceiverVerified, &h.ReceiverName, &h.ReceiverIDNo)
+			&h.OverallTempC, &h.SealIntact, &h.ReceiverVerified, &h.LabelConfirmed,
+			&h.ReceiverName, &h.ReceiverIDNo)
 		if err == nil {
 			result["handover"] = h
 		}

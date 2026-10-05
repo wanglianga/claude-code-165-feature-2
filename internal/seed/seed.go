@@ -38,22 +38,33 @@ func Run(ctx context.Context, pool *pgxpool.Pool) error {
 		lat, lng, radius                float64
 		dailyCap, coldVehicles, coldCap int
 		recipientTypes                  []string
+		highRisk, allergenManaged       bool
 	}{
 		{"CH001", "绿洲食物银行", "上海市长宁区凯旋路 613 号", "021-52000001",
 			31.2180, 121.4110, 15, 200, 2, 120,
-			[]string{"community_kitchen", "shelter", "elderly_care"}},
+			[]string{"community_kitchen", "shelter", "elderly_care"},
+			true, true}, // 服务老人等高风险受助点，但已完成过敏原分区储运备案
 		{"CH002", "晨光公益服务中心", "上海市长宁区愚园路 1203 号", "021-52000002",
 			31.2205, 121.4301, 8, 60, 0, 0,
-			[]string{"community_kitchen"}},
+			[]string{"community_kitchen"},
+			false, false},
+		{"CH003", "童爱公益服务中心", "上海市长宁区安化路 222 号", "021-52000003",
+			31.2260, 121.4350, 10, 50, 0, 0,
+			[]string{"children_center"},
+			true, false}, // 儿童福利机构，无过敏原管理备案：含坚果/乳制品批次默认排除
 	}
 	for _, c := range charities {
 		if _, err := pool.Exec(ctx, `
 			INSERT INTO charities(code, name, address, lat, lng, service_radius_km,
 			    daily_capacity_boxes, cold_chain_vehicles, cold_chain_capacity_boxes,
-			    recipient_types, contact_phone)
-			VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT (code) DO NOTHING`,
+			    recipient_types, high_risk_recipients, allergen_managed, contact_phone)
+			VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+			ON CONFLICT (code) DO UPDATE SET
+			    high_risk_recipients=EXCLUDED.high_risk_recipients,
+			    allergen_managed=EXCLUDED.allergen_managed`,
 			c.code, c.name, c.address, c.lat, c.lng, c.radius,
-			c.dailyCap, c.coldVehicles, c.coldCap, c.recipientTypes, c.phone); err != nil {
+			c.dailyCap, c.coldVehicles, c.coldCap, c.recipientTypes,
+			c.highRisk, c.allergenManaged, c.phone); err != nil {
 			return err
 		}
 	}
@@ -63,6 +74,8 @@ func Run(ctx context.Context, pool *pgxpool.Pool) error {
 		{"store2.manager", "Store@123", "张江店店长", "store_manager", "ST002", ""},
 		{"charity1.staff", "Charity@123", "绿洲食物银行调度员", "charity_staff", "", "CH001"},
 		{"charity2.staff", "Charity@123", "晨光公益调度员", "charity_staff", "", "CH002"},
+		{"charity3.staff", "Charity@123", "童爱公益调度员", "charity_staff", "", "CH003"},
+		{"safety.officer", "Safety@123", "品牌食安专员", "safety_officer", "", ""},
 		{"regulator", "Regulator@123", "市场监管局检查员", "regulator", "", ""},
 		{"admin", "Admin@123", "平台管理员", "admin", "", ""},
 	}

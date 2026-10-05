@@ -35,11 +35,12 @@ func ErrUnprocessable(msg string) *AppError {
 // ---------- 角色 ----------
 
 const (
-	RoleStoreStaff   = "store_staff"
-	RoleStoreManager = "store_manager"
-	RoleCharityStaff = "charity_staff"
-	RoleRegulator    = "regulator"
-	RoleAdmin        = "admin"
+	RoleStoreStaff    = "store_staff"
+	RoleStoreManager  = "store_manager"
+	RoleCharityStaff  = "charity_staff"
+	RoleRegulator     = "regulator"
+	RoleAdmin         = "admin"
+	RoleSafetyOfficer = "safety_officer" // 食安专员：过敏原缺失复核裁决
 )
 
 // ---------- 批次状态机 ----------
@@ -113,19 +114,23 @@ const (
 	ExRegulatoryCheck  = "regulatory_check"  // 监管抽查
 	ExCapacityRejected = "capacity_rejected" // 接收能力不足被拒
 	ExTempBreach       = "temp_breach"       // 温度超标
+	ExInternalLoss     = "internal_loss"     // 门店内部报损（过敏原无法补录时）
+	ExAllergenReview   = "allergen_review"   // 食安专员复核
+	ExAllergenExcluded = "allergen_excluded" // 补录后高风险受助点机构被排除
 )
 
 // ---------- 凭证类型 ----------
 
 const (
-	VoucherSource       = "source"       // 来源凭证（上报）
-	VoucherReservation  = "reservation"  // 预约凭证
-	VoucherConfirmation = "confirmation" // 门店确认凭证
-	VoucherHandover     = "handover"     // 交接凭证（温控+封签+身份）
-	VoucherDelivery     = "delivery"     // 配送凭证
-	VoucherDistribution = "distribution" // 发放凭证
-	VoucherException    = "exception"    // 异常凭证
-	VoucherClosure      = "closure"      // 闭环凭证
+	VoucherSource         = "source"          // 来源凭证（上报）
+	VoucherReservation    = "reservation"     // 预约凭证
+	VoucherConfirmation   = "confirmation"    // 门店确认凭证
+	VoucherHandover       = "handover"        // 交接凭证（温控+封签+身份）
+	VoucherDelivery       = "delivery"        // 配送凭证
+	VoucherDistribution   = "distribution"    // 发放凭证
+	VoucherException      = "exception"       // 异常凭证
+	VoucherClosure        = "closure"         // 闭环凭证
+	VoucherAllergenUpdate = "allergen_update" // 过敏原补录/食安复核凭证
 )
 
 // ---------- 实体 ----------
@@ -152,19 +157,23 @@ type Store struct {
 }
 
 type Charity struct {
-	ID                     int64     `json:"id"`
-	Code                   string    `json:"code"`
-	Name                   string    `json:"name"`
-	Address                string    `json:"address"`
-	Lat                    float64   `json:"lat"`
-	Lng                    float64   `json:"lng"`
-	ServiceRadiusKm        float64   `json:"service_radius_km"`
-	DailyCapacityBoxes     int       `json:"daily_capacity_boxes"`
-	ColdChainVehicles      int       `json:"cold_chain_vehicles"`
-	ColdChainCapacityBoxes int       `json:"cold_chain_capacity_boxes"`
-	RecipientTypes         []string  `json:"recipient_types"`
-	ContactPhone           string    `json:"contact_phone"`
-	CreatedAt              time.Time `json:"created_at"`
+	ID                     int64    `json:"id"`
+	Code                   string   `json:"code"`
+	Name                   string   `json:"name"`
+	Address                string   `json:"address"`
+	Lat                    float64  `json:"lat"`
+	Lng                    float64  `json:"lng"`
+	ServiceRadiusKm        float64  `json:"service_radius_km"`
+	DailyCapacityBoxes     int      `json:"daily_capacity_boxes"`
+	ColdChainVehicles      int      `json:"cold_chain_vehicles"`
+	ColdChainCapacityBoxes int      `json:"cold_chain_capacity_boxes"`
+	RecipientTypes         []string `json:"recipient_types"`
+	// HighRiskRecipients 机构服务儿童/老人/过敏高风险受助点；含坚果或乳制品的批次补录后此类机构默认排除。
+	HighRiskRecipients bool `json:"high_risk_recipients"`
+	// AllergenManaged 机构具备过敏原分区储运与告知能力，经食安备案可接收含坚果/乳制品批次。
+	AllergenManaged bool      `json:"allergen_managed"`
+	ContactPhone    string    `json:"contact_phone"`
+	CreatedAt       time.Time `json:"created_at"`
 }
 
 type Batch struct {
@@ -181,17 +190,22 @@ type Batch struct {
 	ExpiresAt         time.Time `json:"expires_at"`
 	Allergens         []string  `json:"allergens"`
 	AllergenConfirmed bool      `json:"allergen_confirmed"`
-	RequiresColdChain bool      `json:"requires_cold_chain"`
-	StorageTempMaxC   *float64  `json:"storage_temp_max_c,omitempty"`
-	Packaging         string    `json:"packaging"`
-	Address           string    `json:"address"`
-	Lat               float64   `json:"lat"`
-	Lng               float64   `json:"lng"`
-	LatestPickupAt    time.Time `json:"latest_pickup_at"`
-	Notes             string    `json:"notes"`
-	Version           int       `json:"version"`
-	CreatedAt         time.Time `json:"created_at"`
-	UpdatedAt         time.Time `json:"updated_at"`
+	// AllergenHeld 高风险成分（坚果/乳制品）批次未填过敏原被拦截，不可发布给公益机构。
+	AllergenHeld       bool      `json:"allergen_held"`
+	HoldReason         string    `json:"hold_reason,omitempty"`
+	RiskIngredients    []string  `json:"risk_ingredients,omitempty"`
+	EligibleCharityIDs []int64   `json:"eligible_charity_ids,omitempty"`
+	RequiresColdChain  bool      `json:"requires_cold_chain"`
+	StorageTempMaxC    *float64  `json:"storage_temp_max_c,omitempty"`
+	Packaging          string    `json:"packaging"`
+	Address            string    `json:"address"`
+	Lat                float64   `json:"lat"`
+	Lng                float64   `json:"lng"`
+	LatestPickupAt     time.Time `json:"latest_pickup_at"`
+	Notes              string    `json:"notes"`
+	Version            int       `json:"version"`
+	CreatedAt          time.Time `json:"created_at"`
+	UpdatedAt          time.Time `json:"updated_at"`
 }
 
 type Box struct {
@@ -233,8 +247,10 @@ type Handover struct {
 	OverallTempC     *float64   `json:"overall_temp_c,omitempty"`
 	SealIntact       *bool      `json:"seal_intact,omitempty"`
 	ReceiverVerified bool       `json:"receiver_verified"`
-	ReceiverName     string     `json:"receiver_name"`
-	ReceiverIDNo     string     `json:"receiver_id_no"`
+	// LabelConfirmed 签收时接收方再次确认过敏原标签完整。
+	LabelConfirmed bool   `json:"label_confirmed"`
+	ReceiverName   string `json:"receiver_name"`
+	ReceiverIDNo   string `json:"receiver_id_no"`
 }
 
 type HandoverScan struct {
@@ -326,4 +342,53 @@ type RecipientSum struct {
 	RecipientType string `json:"recipient_type"`
 	SiteName      string `json:"site_name"`
 	Boxes         int    `json:"boxes"`
+}
+
+// ---------- 门店任务 / 食安复核 ----------
+
+const (
+	TaskTypeAllergenSupplement = "allergen_supplement" // 过敏原补录任务
+
+	TaskOpen      = "open"
+	TaskDone      = "done"
+	TaskCancelled = "cancelled"
+
+	// 门店对拦截批次的三种处置
+	ResolutionSupplement   = "supplement"    // 补齐过敏原标签后重新发布
+	ResolutionInternalLoss = "internal_loss" // 改为内部报损
+	ResolutionSafetyReview = "safety_review" // 等待食安专员复核
+
+	ReviewPending  = "pending"
+	ReviewApproved = "approved"
+	ReviewRejected = "rejected"
+)
+
+// StoreTask 门店待办：高风险成分批次过敏原缺失时自动生成的补录任务。
+type StoreTask struct {
+	ID           int64      `json:"id"`
+	TaskNo       string     `json:"task_no"`
+	BatchID      int64      `json:"batch_id"`
+	StoreID      int64      `json:"store_id"`
+	Type         string     `json:"type"`
+	Status       string     `json:"status"`
+	Priority     string     `json:"priority"`
+	Reason       string     `json:"reason"`
+	Resolution   string     `json:"resolution,omitempty"`
+	ResolutionBy *int64     `json:"resolution_by,omitempty"`
+	CreatedAt    time.Time  `json:"created_at"`
+	ResolvedAt   *time.Time `json:"resolved_at,omitempty"`
+}
+
+// AllergenReview 食安专员复核单：门店无法自行确认过敏原时提交。
+type AllergenReview struct {
+	ID                int64      `json:"id"`
+	BatchID           int64      `json:"batch_id"`
+	StoreID           int64      `json:"store_id"`
+	Status            string     `json:"status"`
+	DecisionNote      string     `json:"decision_note,omitempty"`
+	SubmittedBy       *int64     `json:"submitted_by,omitempty"`
+	ReviewedBy        *int64     `json:"reviewed_by,omitempty"`
+	ProposedAllergens []string   `json:"proposed_allergens"`
+	CreatedAt         time.Time  `json:"created_at"`
+	ResolvedAt        *time.Time `json:"resolved_at,omitempty"`
 }

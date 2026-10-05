@@ -57,6 +57,9 @@ func (s *Service) ReportException(ctx context.Context, u *domain.User, batchID i
 					return err
 				}
 			}
+			if err := cancelOpenTasksForBatch(ctx, tx, batchID); err != nil {
+				return err
+			}
 			if _, err := tx.Exec(ctx, `
 				UPDATE batches SET status=$1, version=version+1, updated_at=now()
 				WHERE id=$2 AND status IN ('reported','reserved','confirmed','handover')`,
@@ -73,6 +76,9 @@ func (s *Service) ReportException(ctx context.Context, u *domain.User, batchID i
 			if _, err := tx.Exec(ctx, `
 				UPDATE reservations SET status=$1, cancel_reason='公益机构爽约未取货', version=version+1, updated_at=now()
 				WHERE id=$2`, domain.ResvCancelled, *resvID); err != nil {
+				return err
+			}
+			if err := cancelOpenTasksForBatch(ctx, tx, batchID); err != nil {
 				return err
 			}
 			if _, err := tx.Exec(ctx, `
@@ -270,6 +276,9 @@ func (s *Service) runExpiry(ctx context.Context) (int, error) {
 				UPDATE batches SET status=$1, version=version+1, updated_at=now()
 				WHERE id=$2 AND status IN ('reported','reserved','confirmed','handover')`,
 				domain.BatchExpired, id); err != nil {
+				return err
+			}
+			if err := cancelOpenTasksForBatch(ctx, tx, id); err != nil {
 				return err
 			}
 			detail := map[string]any{"batch_no": b.BatchNo, "latest_pickup_at": b.LatestPickupAt}

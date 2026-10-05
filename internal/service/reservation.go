@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -93,12 +94,24 @@ func (s *Service) Reserve(ctx context.Context, u *domain.User, batchID int64, in
 			return err
 		}
 
+		// 过敏原资格：含坚果/乳制品批次按重算快照排除高风险受助点机构
+		allergenEligible := true
+		exclusionReason := ""
+		if len(domain.RiskGroupsFromAllergens(b.Allergens)) > 0 {
+			allergenEligible = domain.CharityAllergenEligible(*b, *c)
+			if !allergenEligible {
+				exclusionReason = fmt.Sprintf(
+					"%s 服务儿童、老人或过敏高风险受助点，且无过敏原分区储运备案，不可接收含%s批次",
+					c.Name, strings.Join(domain.RiskGroupLabels(domain.RiskGroupsFromAllergens(b.Allergens)), "/"))
+			}
+		}
 		if ce := domain.CheckReservation(domain.ReserveCheckInput{
 			Batch: *b, Charity: *c,
 			ReservedTodayBoxes: reservedToday, ColdReservedToday: coldReservedToday,
 			RequestBoxes: in.Boxes, ColdChainVehicle: in.ColdChain,
 			PlannedPickupAt: in.PlannedPickupAt, Now: time.Now(),
 			LargeReleaseRatio: s.Cfg.LargeReleaseRatio, LargeReleaseMaxWait: s.Cfg.LargeReleaseMaxWait,
+			AllergenEligible: allergenEligible, ExclusionReason: exclusionReason,
 		}); ce != nil {
 			// 业务回滚，阻断异常在事务外独立落库（见下方）
 			checkErr = ce
@@ -160,8 +173,13 @@ func (s *Service) Reserve(ctx context.Context, u *domain.User, batchID int64, in
 // recordReserveRejection 预约被规则阻断后，独立事务落库异常凭证与事件。
 func (s *Service) recordReserveRejection(ctx context.Context, u *domain.User, b *domain.Batch, in ReserveInput, checkErr *domain.AppError) {
 	exType := domain.ExCapacityRejected
-	if !b.AllergenConfirmed {
+	if b.AllergenHeld || !b.AllergenConfirmed {
 		exType = domain.ExAllergenMissing
+	} else if len(domain.RiskGroupsFromAllergens(b.Allergens)) > 0 {
+		// 能识别为坚果/乳制品资格问题时按过敏原排除留痕
+		if strings.Contains(checkErr.Message, "过敏") {
+			exType = domain.ExAllergenExcluded
+		}
 	}
 	detail := map[string]any{"reason": checkErr.Message, "charity_id": in.CharityID, "boxes": in.Boxes}
 	_ = store.WithTx(ctx, s.DB, func(tx pgx.Tx) error {

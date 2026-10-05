@@ -52,6 +52,11 @@ func NewRouter(svc *service.Service, openapiYAML []byte) *gin.Engine {
 		authed.GET("/batches/:id", h.GetBatch)
 		authed.PATCH("/batches/:id/allergens",
 			RequireRoles(domain.RoleStoreStaff, domain.RoleStoreManager), h.ConfirmAllergens)
+		authed.GET("/batches/:id/eligible-charities", h.ListEligibleCharities)
+		authed.POST("/batches/:id/internal-loss",
+			RequireRoles(domain.RoleStoreStaff, domain.RoleStoreManager), h.InternalLoss)
+		authed.POST("/batches/:id/allergen-reviews",
+			RequireRoles(domain.RoleStoreStaff, domain.RoleStoreManager), h.SubmitAllergenReview)
 		authed.POST("/batches/:id/reserve",
 			RequireRoles(domain.RoleCharityStaff), h.Reserve)
 		authed.GET("/batches/:id/vouchers", h.ListVouchers)
@@ -87,6 +92,16 @@ func NewRouter(svc *service.Service, openapiYAML []byte) *gin.Engine {
 		// 异常
 		authed.GET("/exceptions", h.ListExceptions)
 		authed.POST("/exceptions/:id/resolve", h.ResolveException)
+
+		// 过敏原缺失拦截：门店补录任务与食安专员复核
+		authed.GET("/store-tasks",
+			RequireRoles(domain.RoleStoreStaff, domain.RoleStoreManager,
+				domain.RoleRegulator, domain.RoleSafetyOfficer), h.ListStoreTasks)
+		authed.GET("/allergen-reviews",
+			RequireRoles(domain.RoleStoreStaff, domain.RoleStoreManager,
+				domain.RoleRegulator, domain.RoleSafetyOfficer), h.ListAllergenReviews)
+		authed.POST("/allergen-reviews/:id/decision",
+			RequireRoles(domain.RoleSafetyOfficer), h.DecideAllergenReview)
 
 		// 管理
 		authed.POST("/admin/jobs/expire", RequireRoles(domain.RoleAdmin), h.RunExpiryJob)

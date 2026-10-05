@@ -52,12 +52,15 @@ func lockBatch(ctx context.Context, tx txQuerier, id int64) (*domain.Batch, erro
 	err := tx.QueryRow(ctx, `
 		SELECT id, batch_no, store_id, status, category, description, total_boxes, quantity_desc,
 		       produced_at, shelf_life_hours, expires_at, allergens, allergen_confirmed,
+		       allergen_held, hold_reason, risk_ingredients, eligible_charity_ids,
 		       requires_cold_chain, storage_temp_max_c, packaging, address, lat, lng,
 		       latest_pickup_at, notes, version, created_at, updated_at
 		FROM batches WHERE id=$1 FOR UPDATE`, id).Scan(
 		&b.ID, &b.BatchNo, &b.StoreID, &b.Status, &b.Category, &b.Description, &b.TotalBoxes,
 		&b.QuantityDesc, &b.ProducedAt, &b.ShelfLifeHours, &b.ExpiresAt, &b.Allergens,
-		&b.AllergenConfirmed, &b.RequiresColdChain, &b.StorageTempMaxC, &b.Packaging,
+		&b.AllergenConfirmed, &b.AllergenHeld, &b.HoldReason, &b.RiskIngredients,
+		&b.EligibleCharityIDs,
+		&b.RequiresColdChain, &b.StorageTempMaxC, &b.Packaging,
 		&b.Address, &b.Lat, &b.Lng, &b.LatestPickupAt, &b.Notes, &b.Version, &b.CreatedAt, &b.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, domain.ErrNotFound
@@ -73,12 +76,15 @@ func getBatch(ctx context.Context, q txQuerier, id int64) (*domain.Batch, error)
 	err := q.QueryRow(ctx, `
 		SELECT id, batch_no, store_id, status, category, description, total_boxes, quantity_desc,
 		       produced_at, shelf_life_hours, expires_at, allergens, allergen_confirmed,
+		       allergen_held, hold_reason, risk_ingredients, eligible_charity_ids,
 		       requires_cold_chain, storage_temp_max_c, packaging, address, lat, lng,
 		       latest_pickup_at, notes, version, created_at, updated_at
 		FROM batches WHERE id=$1`, id).Scan(
 		&b.ID, &b.BatchNo, &b.StoreID, &b.Status, &b.Category, &b.Description, &b.TotalBoxes,
 		&b.QuantityDesc, &b.ProducedAt, &b.ShelfLifeHours, &b.ExpiresAt, &b.Allergens,
-		&b.AllergenConfirmed, &b.RequiresColdChain, &b.StorageTempMaxC, &b.Packaging,
+		&b.AllergenConfirmed, &b.AllergenHeld, &b.HoldReason, &b.RiskIngredients,
+		&b.EligibleCharityIDs,
+		&b.RequiresColdChain, &b.StorageTempMaxC, &b.Packaging,
 		&b.Address, &b.Lat, &b.Lng, &b.LatestPickupAt, &b.Notes, &b.Version, &b.CreatedAt, &b.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, domain.ErrNotFound
@@ -93,11 +99,12 @@ func getCharity(ctx context.Context, q txQuerier, id int64) (*domain.Charity, er
 	c := &domain.Charity{}
 	err := q.QueryRow(ctx, `
 		SELECT id, code, name, address, lat, lng, service_radius_km, daily_capacity_boxes,
-		       cold_chain_vehicles, cold_chain_capacity_boxes, recipient_types, contact_phone, created_at
+		       cold_chain_vehicles, cold_chain_capacity_boxes, recipient_types,
+		       high_risk_recipients, allergen_managed, contact_phone, created_at
 		FROM charities WHERE id=$1`, id).Scan(
 		&c.ID, &c.Code, &c.Name, &c.Address, &c.Lat, &c.Lng, &c.ServiceRadiusKm,
 		&c.DailyCapacityBoxes, &c.ColdChainVehicles, &c.ColdChainCapacityBoxes,
-		&c.RecipientTypes, &c.ContactPhone, &c.CreatedAt)
+		&c.RecipientTypes, &c.HighRiskRecipients, &c.AllergenManaged, &c.ContactPhone, &c.CreatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, domain.ErrNotFound
 	}
@@ -105,6 +112,31 @@ func getCharity(ctx context.Context, q txQuerier, id int64) (*domain.Charity, er
 		return nil, err
 	}
 	return c, nil
+}
+
+// listCharities 全量机构（资格重算/公开列表用）。
+func listCharities(ctx context.Context, q txQuerier) ([]domain.Charity, error) {
+	rows, err := q.Query(ctx, `
+		SELECT id, code, name, address, lat, lng, service_radius_km, daily_capacity_boxes,
+		       cold_chain_vehicles, cold_chain_capacity_boxes, recipient_types,
+		       high_risk_recipients, allergen_managed, contact_phone, created_at
+		FROM charities ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []domain.Charity
+	for rows.Next() {
+		var c domain.Charity
+		if err := rows.Scan(&c.ID, &c.Code, &c.Name, &c.Address, &c.Lat, &c.Lng,
+			&c.ServiceRadiusKm, &c.DailyCapacityBoxes, &c.ColdChainVehicles,
+			&c.ColdChainCapacityBoxes, &c.RecipientTypes, &c.HighRiskRecipients,
+			&c.AllergenManaged, &c.ContactPhone, &c.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
 }
 
 func getReservation(ctx context.Context, q txQuerier, id int64) (*domain.Reservation, error) {

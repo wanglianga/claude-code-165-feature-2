@@ -12,6 +12,12 @@ info:
     **异常场景**：门店临时售罄、超过可捐赠时限、冷链车迟到、机构爽约、箱号错扫、
     过敏原缺失、受助点反馈变质、监管抽查。
 
+    **过敏原缺失拦截**：门店上报含坚果/乳制品等高风险成分却未填写过敏原的批次时，
+    服务拦截该批次（不可发布给公益机构）并自动生成门店补录任务；门店可补齐过敏原标签、
+    改为内部报损或提交食安专员复核。补录/复核核准后服务重算可接收机构，
+    服务儿童、老人或过敏高风险受助点且无过敏原管理备案的机构将被排除；
+    接收方签收时须再次确认过敏原标签完整。
+
     **一致性设计**：
     - 同一批次重复预约：Redis 分布式锁 + 数据库部分唯一索引 + Idempotency-Key 三重防重；
     - 批次状态机由数据库守卫迁移（乐观并发）；
@@ -28,6 +34,7 @@ tags:
   - name: reservations
   - name: handover
   - name: delivery
+  - name: allergen
   - name: exceptions
   - name: audit
   - name: admin
@@ -198,13 +205,166 @@ paths:
                   example: ["gluten", "egg", "milk"]
       responses:
         '200':
-          description: 已确认
+          description: 已确认并重算可接收机构
           content:
             application/json:
               schema:
                 type: object
                 properties:
                   batch: { $ref: '#/components/schemas/Batch' }
+                  excluded_charity_ids:
+                    type: array
+                    items: { type: integer }
+                    description: 因儿童/老人/过敏高风险受助点被排除的机构 id
+        '409': { $ref: '#/components/responses/Error' }
+
+  /api/v1/batches/{id}/eligible-charities:
+    get:
+      tags: [allergen]
+      summary: |
+        查询批次过敏原重算后的可接收机构：含坚果/乳制品批次，
+        服务儿童、老人或过敏高风险受助点且无过敏原管理备案的机构标记 eligible=false。
+      parameters:
+        - { $ref: '#/components/parameters/id' }
+      responses:
+        '200':
+          description: 机构资格列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  batch: { $ref: '#/components/schemas/Batch' }
+                  charities:
+                    type: array
+                    items: { $ref: '#/components/schemas/CharityEligibility' }
+
+  /api/v1/batches/{id}/internal-loss:
+    post:
+      tags: [allergen]
+      summary: 门店将过敏原拦截批次改为内部报损（批次取消、不流向公益机构、关闭补录任务）
+      parameters:
+        - { $ref: '#/components/parameters/id' }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                note: { type: string }
+      responses:
+        '200':
+          description: 报损异常已记录
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  exception: { $ref: '#/components/schemas/Exception' }
+        '409': { $ref: '#/components/responses/Error' }
+
+  /api/v1/batches/{id}/allergen-reviews:
+    post:
+      tags: [allergen]
+      summary: 门店对拦截批次提交食安专员复核（补录任务转为等待复核）
+      parameters:
+        - { $ref: '#/components/parameters/id' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [note]
+              properties:
+                proposed_allergens:
+                  type: array
+                  items: { type: string }
+                  example: ["milk", "nut"]
+                note: { type: string, example: 标签破损，疑似含坚果，无法自行确认 }
+      responses:
+        '201':
+          description: 复核单已提交
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  review: { $ref: '#/components/schemas/AllergenReview' }
+        '409': { $ref: '#/components/responses/Error' }
+
+  /api/v1/store-tasks:
+    get:
+      tags: [allergen]
+      summary: 门店过敏原补录任务列表（门店仅见本店；可按 status=open 过滤）
+      parameters:
+        - { name: store_id, in: query, schema: { type: integer } }
+        - { name: status, in: query, schema: { type: string, enum: [open, done, cancelled] } }
+      responses:
+        '200':
+          description: 任务列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tasks:
+                    type: array
+                    items: { $ref: '#/components/schemas/StoreTask' }
+
+  /api/v1/allergen-reviews:
+    get:
+      tags: [allergen]
+      summary: 食安复核单列表（食安专员/监管全量，门店仅见本店）
+      parameters:
+        - { name: status, in: query, schema: { type: string, enum: [pending, approved, rejected] } }
+      responses:
+        '200':
+          description: 复核单列表
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  reviews:
+                    type: array
+                    items: { $ref: '#/components/schemas/AllergenReview' }
+
+  /api/v1/allergen-reviews/{id}/decision:
+    post:
+      tags: [allergen]
+      summary: |
+        食安专员裁决复核：approved 采用过敏原并解除拦截、重算可接收机构；
+        rejected 维持拦截并重新生成门店补录任务。
+      parameters:
+        - { $ref: '#/components/parameters/id' }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [decision]
+              properties:
+                decision: { type: string, enum: [approved, rejected] }
+                allergens:
+                  type: array
+                  items: { type: string }
+                  example: ["milk", "nut"]
+                note: { type: string }
+      responses:
+        '200':
+          description: 裁决完成
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  review: { $ref: '#/components/schemas/AllergenReview' }
+                  batch: { $ref: '#/components/schemas/Batch' }
+                  excluded_charity_ids:
+                    type: array
+                    items: { type: integer }
 
   /api/v1/batches/{id}/reserve:
     post:
@@ -371,7 +531,9 @@ paths:
   /api/v1/reservations/{id}/handover/complete:
     post:
       tags: [handover]
-      summary: 完成交接（全部箱已扫码 + 接收人身份核验 + 整体温度与封签）
+      summary: |
+        完成交接（全部箱已扫码 + 接收人身份核验 + 整体温度与封签）。
+        接收方须 label_confirmed=true 再次确认过敏原标签完整；过敏原仍缺失时无法签收。
       parameters:
         - { $ref: '#/components/parameters/id' }
       requestBody:
@@ -386,6 +548,10 @@ paths:
                 receiver_id_no: { type: string }
                 overall_temp_c: { type: number }
                 seal_intact: { type: boolean }
+                label_confirmed:
+                  type: boolean
+                  description: 接收方再次确认过敏原标签完整
+                  example: true
       responses:
         '200':
           description: 交接完成
@@ -688,7 +854,7 @@ components:
         display_name: { type: string }
         role:
           type: string
-          enum: [store_staff, store_manager, charity_staff, regulator, admin]
+          enum: [store_staff, store_manager, charity_staff, regulator, admin, safety_officer]
         store_id: { type: integer }
         charity_id: { type: integer }
     Store:
@@ -714,6 +880,12 @@ components:
         recipient_types:
           type: array
           items: { type: string }
+        high_risk_recipients:
+          type: boolean
+          description: 是否服务儿童、老人或过敏高风险受助点
+        allergen_managed:
+          type: boolean
+          description: 是否具备过敏原分区储运与告知备案
     BatchStatus:
       type: string
       enum: [reported, reserved, confirmed, handover, handed_over, in_delivery, distributed, cancelled, expired]
@@ -733,6 +905,17 @@ components:
           type: array
           items: { type: string }
         allergen_confirmed: { type: boolean }
+        allergen_held:
+          type: boolean
+          description: 含坚果/乳制品但过敏原缺失被拦截，不可发布
+        hold_reason: { type: string }
+        risk_ingredients:
+          type: array
+          items: { type: string, enum: [nuts, dairy] }
+        eligible_charity_ids:
+          type: array
+          description: 补录后重算的可接收机构 id（无坚果/乳制品时为 null）
+          items: { type: integer }
         requires_cold_chain: { type: boolean }
         storage_temp_max_c: { type: number }
         packaging: { type: string, enum: [intact, minor_damage, damaged] }
@@ -814,6 +997,9 @@ components:
         overall_temp_c: { type: number }
         seal_intact: { type: boolean }
         receiver_verified: { type: boolean }
+        label_confirmed:
+          type: boolean
+          description: 签收时接收方再次确认过敏原标签完整
         receiver_name: { type: string }
     HandoverScan:
       type: object
@@ -882,7 +1068,7 @@ components:
         batch_id: { type: integer }
         type:
           type: string
-          enum: [source, reservation, confirmation, handover, delivery, distribution, exception, closure]
+          enum: [source, reservation, confirmation, handover, delivery, distribution, exception, closure, allergen_update]
         payload: { type: object, additionalProperties: true }
         hash: { type: string }
         prev_hash: { type: string }
@@ -896,11 +1082,50 @@ components:
         reservation_id: { type: integer }
         type:
           type: string
-          enum: [sold_out, expired, truck_late, no_show, wrong_scan, allergen_missing, spoilage_report, regulatory_check, capacity_rejected, temp_breach]
+          enum: [sold_out, expired, truck_late, no_show, wrong_scan, allergen_missing, spoilage_report, regulatory_check, capacity_rejected, temp_breach, internal_loss, allergen_review, allergen_excluded]
         detail: { type: object, additionalProperties: true }
         status: { type: string, enum: [open, resolved] }
         resolution: { type: string }
         created_at: { type: string, format: date-time }
+    StoreTask:
+      type: object
+      properties:
+        id: { type: integer }
+        task_no: { type: string }
+        batch_id: { type: integer }
+        store_id: { type: integer }
+        type: { type: string, enum: [allergen_supplement] }
+        status: { type: string, enum: [open, done, cancelled] }
+        priority: { type: string, enum: [high, normal] }
+        reason: { type: string }
+        resolution:
+          type: string
+          enum: [supplement, internal_loss, safety_review]
+          description: done 时门店选择的处置方式
+        resolution_by: { type: integer }
+        created_at: { type: string, format: date-time }
+        resolved_at: { type: string, format: date-time }
+    AllergenReview:
+      type: object
+      properties:
+        id: { type: integer }
+        batch_id: { type: integer }
+        store_id: { type: integer }
+        status: { type: string, enum: [pending, approved, rejected] }
+        decision_note: { type: string }
+        submitted_by: { type: integer }
+        reviewed_by: { type: integer }
+        proposed_allergens:
+          type: array
+          items: { type: string }
+        created_at: { type: string, format: date-time }
+        resolved_at: { type: string, format: date-time }
+    CharityEligibility:
+      type: object
+      properties:
+        charity: { $ref: '#/components/schemas/Charity' }
+        eligible: { type: boolean }
+        reason: { type: string }
     Publicity:
       type: object
       properties:

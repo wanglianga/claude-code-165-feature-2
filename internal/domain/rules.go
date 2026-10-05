@@ -29,6 +29,11 @@ type ReserveCheckInput struct {
 	Now                 time.Time
 	LargeReleaseRatio   float64
 	LargeReleaseMaxWait time.Duration
+	// AllergenEligible 该机构是否在批次过敏原重算后的可接收名单内
+	// （无坚果/乳制品批次恒为 true；由 service 依据快照与机构风险标志计算）。
+	AllergenEligible bool
+	// ExclusionReason 机构被排除的原因（高风险受助点），用于 422 提示。
+	ExclusionReason string
 }
 
 // CheckReservation 执行预约规则：服务半径、接收能力、冷链能力、时限、
@@ -41,11 +46,23 @@ func CheckReservation(in ReserveCheckInput) *AppError {
 	if b.Status != BatchReported {
 		return ErrConflict(fmt.Sprintf("批次当前状态为 %s，不可预约", b.Status))
 	}
+	if b.AllergenHeld {
+		return ErrUnprocessable("批次含坚果/乳制品等高风险成分但过敏原信息缺失，已被拦截，门店补录并解除拦截前不可预约")
+	}
 	if !in.Now.Before(b.LatestPickupAt) {
 		return ErrUnprocessable("批次已超过最晚取走时间，不可预约")
 	}
 	if !b.AllergenConfirmed {
 		return ErrUnprocessable("批次过敏原信息未确认，存在食品安全风险，暂不可预约")
+	}
+	// 补录过敏原后重算资格：服务儿童/老人/过敏高风险受助点且无过敏原管理能力的机构被排除。
+	// 仅对含坚果/乳制品的批次生效。
+	if len(RiskGroupsFromAllergens(b.Allergens)) > 0 && !in.AllergenEligible {
+		reason := in.ExclusionReason
+		if reason == "" {
+			reason = "该机构服务儿童、老人或过敏高风险受助点，暂不可接收含坚果/乳制品的批次"
+		}
+		return ErrUnprocessable(reason)
 	}
 	if in.RequestBoxes <= 0 || in.RequestBoxes > b.TotalBoxes {
 		return ErrUnprocessable(fmt.Sprintf("预约箱数须为 1~%d", b.TotalBoxes))

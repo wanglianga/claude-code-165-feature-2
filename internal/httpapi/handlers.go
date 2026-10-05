@@ -139,12 +139,12 @@ func (h *Handler) ConfirmAllergens(c *gin.Context) {
 		writeError(c, domain.ErrBadRequest("allergens 必填"))
 		return
 	}
-	b, err := h.svc.ConfirmAllergens(c.Request.Context(), currentUser(c), id, req.Allergens)
+	b, excluded, err := h.svc.ConfirmAllergens(c.Request.Context(), currentUser(c), id, req.Allergens)
 	if err != nil {
 		writeError(c, err)
 		return
 	}
-	c.JSON(200, gin.H{"batch": b})
+	c.JSON(200, gin.H{"batch": b, "excluded_charity_ids": excluded})
 }
 
 // ---------- 预约 ----------
@@ -293,10 +293,11 @@ func (h *Handler) ScanBox(c *gin.Context) {
 }
 
 type completeHandoverReq struct {
-	ReceiverName string   `json:"receiver_name" binding:"required"`
-	ReceiverIDNo string   `json:"receiver_id_no" binding:"required"`
-	OverallTempC *float64 `json:"overall_temp_c"`
-	SealIntact   *bool    `json:"seal_intact" binding:"required"`
+	ReceiverName   string   `json:"receiver_name" binding:"required"`
+	ReceiverIDNo   string   `json:"receiver_id_no" binding:"required"`
+	OverallTempC   *float64 `json:"overall_temp_c"`
+	SealIntact     *bool    `json:"seal_intact" binding:"required"`
+	LabelConfirmed bool     `json:"label_confirmed"`
 }
 
 func (h *Handler) CompleteHandover(c *gin.Context) {
@@ -310,7 +311,7 @@ func (h *Handler) CompleteHandover(c *gin.Context) {
 		return
 	}
 	hv, err := h.svc.CompleteHandover(c.Request.Context(), currentUser(c), id,
-		req.ReceiverName, req.ReceiverIDNo, req.OverallTempC, req.SealIntact)
+		req.ReceiverName, req.ReceiverIDNo, req.OverallTempC, req.SealIntact, req.LabelConfirmed)
 	if err != nil {
 		writeError(c, err)
 		return
@@ -559,7 +560,8 @@ func (h *Handler) ListStores(c *gin.Context) {
 func (h *Handler) ListCharities(c *gin.Context) {
 	rows, err := h.svc.DB.Query(c.Request.Context(), `
 		SELECT id, code, name, address, lat, lng, service_radius_km, daily_capacity_boxes,
-		       cold_chain_vehicles, cold_chain_capacity_boxes, recipient_types, contact_phone, created_at
+		       cold_chain_vehicles, cold_chain_capacity_boxes, recipient_types,
+		       high_risk_recipients, allergen_managed, contact_phone, created_at
 		FROM charities ORDER BY id`)
 	if err != nil {
 		writeError(c, err)
@@ -571,13 +573,125 @@ func (h *Handler) ListCharities(c *gin.Context) {
 		var ch domain.Charity
 		if err := rows.Scan(&ch.ID, &ch.Code, &ch.Name, &ch.Address, &ch.Lat, &ch.Lng,
 			&ch.ServiceRadiusKm, &ch.DailyCapacityBoxes, &ch.ColdChainVehicles,
-			&ch.ColdChainCapacityBoxes, &ch.RecipientTypes, &ch.ContactPhone, &ch.CreatedAt); err != nil {
+			&ch.ColdChainCapacityBoxes, &ch.RecipientTypes, &ch.HighRiskRecipients,
+			&ch.AllergenManaged, &ch.ContactPhone, &ch.CreatedAt); err != nil {
 			writeError(c, err)
 			return
 		}
 		out = append(out, ch)
 	}
 	c.JSON(200, gin.H{"charities": out})
+}
+
+// ---------- 过敏原拦截：补录任务 / 报损 / 食安复核 / 可接收机构 ----------
+
+func (h *Handler) ListStoreTasks(c *gin.Context) {
+	var storeID *int64
+	u := currentUser(c)
+	// 门店账号只看本店；监管/食安专员/管理员可传 store_id 或全量
+	if u.Role == domain.RoleStoreStaff || u.Role == domain.RoleStoreManager {
+		storeID = u.StoreID
+	} else if s := c.Query("store_id"); s != "" {
+		if id, err := strconv.ParseInt(s, 10, 64); err == nil {
+			storeID = &id
+		}
+	}
+	list, err := h.svc.ListStoreTasks(c.Request.Context(), u, storeID, c.Query("status"))
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	c.JSON(200, gin.H{"tasks": list})
+}
+
+func (h *Handler) ListEligibleCharities(c *gin.Context) {
+	id, ok := parseID(c, "id")
+	if !ok {
+		return
+	}
+	batch, list, err := h.svc.ListEligibleCharities(c.Request.Context(), id)
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	c.JSON(200, gin.H{"batch": batch, "charities": list})
+}
+
+type internalLossReq struct {
+	Note string `json:"note"`
+}
+
+func (h *Handler) InternalLoss(c *gin.Context) {
+	id, ok := parseID(c, "id")
+	if !ok {
+		return
+	}
+	var req internalLossReq
+	_ = c.ShouldBindJSON(&req)
+	ex, err := h.svc.InternalLoss(c.Request.Context(), currentUser(c), id, req.Note)
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	c.JSON(200, gin.H{"exception": ex})
+}
+
+type submitReviewReq struct {
+	ProposedAllergens []string `json:"proposed_allergens"`
+	Note              string   `json:"note"`
+}
+
+func (h *Handler) SubmitAllergenReview(c *gin.Context) {
+	id, ok := parseID(c, "id")
+	if !ok {
+		return
+	}
+	var req submitReviewReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		writeError(c, domain.ErrBadRequest("请求体非法: "+err.Error()))
+		return
+	}
+	review, err := h.svc.SubmitAllergenReview(c.Request.Context(), currentUser(c), id,
+		req.ProposedAllergens, req.Note)
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	c.JSON(201, gin.H{"review": review})
+}
+
+type decideReviewReq struct {
+	Decision  string   `json:"decision" binding:"required"`
+	Allergens []string `json:"allergens"`
+	Note      string   `json:"note"`
+}
+
+func (h *Handler) DecideAllergenReview(c *gin.Context) {
+	id, ok := parseID(c, "id")
+	if !ok {
+		return
+	}
+	var req decideReviewReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		writeError(c, domain.ErrBadRequest("decision 必填(approved/rejected)"))
+		return
+	}
+	review, batch, excluded, err := h.svc.DecideAllergenReview(c.Request.Context(), currentUser(c),
+		id, req.Decision, req.Allergens, req.Note)
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	c.JSON(200, gin.H{"review": review, "batch": batch, "excluded_charity_ids": excluded})
+}
+
+func (h *Handler) ListAllergenReviews(c *gin.Context) {
+	list, err := h.svc.ListAllergenReviews(c.Request.Context(), currentUser(c), c.Query("status"))
+	if err != nil {
+		writeError(c, err)
+		return
+	}
+	c.JSON(200, gin.H{"reviews": list})
 }
 
 // ---------- 管理 ----------
